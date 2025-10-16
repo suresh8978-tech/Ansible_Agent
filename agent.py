@@ -845,11 +845,19 @@ def analyze_ansible_structure() -> str:
     # Store discovered role paths globally
     _DISCOVERED_ROLE_PATHS = discovered_roles
     
-    # Find inventory files (check if inventories directory should be ignored)
-    inventories_path = base_path / "inventories"
-    if inventories_path.exists() and should_ignore_directory(inventories_path, "inventories"):
+    # Find inventory files (check if inventory/inventories directories should be ignored)
+    inventory_dir = base_path / "inventory"
+    inventories_dir = base_path / "inventories"
+    
+    should_skip_inventory = False
+    if inventory_dir.exists() and should_ignore_directory(inventory_dir, "inventories"):
+        print_thinking("Skipping inventory directory due to file count limit")
+        should_skip_inventory = True
+    if inventories_dir.exists() and should_ignore_directory(inventories_dir, "inventories"):
         print_thinking("Skipping inventories directory due to file count limit")
-    else:
+        should_skip_inventory = True
+    
+    if not should_skip_inventory:
         inventory_patterns = os.getenv('INVENTORY_PATTERNS', 'inventory/*,inventories/*,hosts,inventory.ini,inventory.yml').split(',')
         for pattern in inventory_patterns:
             for file_path in base_path.glob(pattern.strip()):
@@ -858,6 +866,7 @@ def analyze_ansible_structure() -> str:
                     analysis["inventory_files"].append(str(rel_path))
     
     # Find group_vars and host_vars (check if they should be ignored)
+    skipped_var_types = []
     var_types = os.getenv('VAR_TYPES', 'group_vars,host_vars').split(',')
     for var_type in var_types:
         var_type = var_type.strip()
@@ -865,6 +874,7 @@ def analyze_ansible_structure() -> str:
         if var_path.exists():
             if should_ignore_directory(var_path, var_type):
                 print_thinking(f"Skipping {var_type} directory due to file count limit")
+                skipped_var_types.append(var_type)
                 continue
             for var_file in var_path.rglob("*.yml"):
                 rel_path = var_file.relative_to(REPO_LOCAL_PATH)
@@ -898,8 +908,13 @@ def analyze_ansible_structure() -> str:
     
     if analysis["inventory_files"]:
         output.append(f"Inventory Files ({len(analysis['inventory_files'])}):")
-        for inv in analysis["inventory_files"]:
+        for inv in analysis["inventory_files"][:Config.MAX_ITEMS_DISPLAY]:
             output.append(f"  - {inv}")
+        if len(analysis["inventory_files"]) > Config.MAX_ITEMS_DISPLAY:
+            output.append(f"  ... and {len(analysis['inventory_files']) - Config.MAX_ITEMS_DISPLAY} more")
+        output.append("")
+    elif should_skip_inventory:
+        output.append("Inventory Files: Skipped (directory contains too many files)")
         output.append("")
     
     if analysis["group_vars"]:
@@ -908,6 +923,20 @@ def analyze_ansible_structure() -> str:
             output.append(f"  - {gv}")
         if len(analysis["group_vars"]) > Config.MAX_GROUP_VARS_DISPLAY:
             output.append(f"  ... and {len(analysis['group_vars']) - Config.MAX_GROUP_VARS_DISPLAY} more")
+        output.append("")
+    elif "group_vars" in skipped_var_types:
+        output.append("Group Variables: Skipped (directory contains too many files)")
+        output.append("")
+    
+    if analysis["host_vars"]:
+        output.append(f"Host Variables ({len(analysis['host_vars'])}):")
+        for hv in analysis["host_vars"][:Config.MAX_GROUP_VARS_DISPLAY]:
+            output.append(f"  - {hv}")
+        if len(analysis["host_vars"]) > Config.MAX_GROUP_VARS_DISPLAY:
+            output.append(f"  ... and {len(analysis['host_vars']) - Config.MAX_GROUP_VARS_DISPLAY} more")
+        output.append("")
+    elif "host_vars" in skipped_var_types:
+        output.append("Host Variables: Skipped (directory contains too many files)")
         output.append("")
     
     return "\n".join(output) if any(analysis.values()) else "No Ansible structure detected in the repository."
