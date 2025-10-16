@@ -21,9 +21,10 @@ ansible_capture_path = os.path.join(os.path.dirname(__file__), "ansible-content-
 if os.path.exists(ansible_capture_path) and ansible_capture_path not in sys.path:
     sys.path.insert(0, ansible_capture_path)
 
-# Configuration
-REPO_LOCAL_PATH = "./RHEL8-CIS"
-# GIT_REPO_URL = os.getenv("GIT_REPO_URL")
+# Configuration - Use environment variables with defaults
+REPO_LOCAL_PATH = os.getenv("REPO_LOCAL_PATH", "./RHEL8-CIS")
+MAX_FILES_IN_INVENTORIES = int(os.getenv("MAX_FILES_IN_INVENTORIES", "15"))
+MAX_FILES_IN_HOST_VARS = int(os.getenv("MAX_FILES_IN_HOST_VARS", "15"))
 
 # Global storage for modification plans
 PENDING_MODIFICATION_PLAN = None
@@ -42,37 +43,37 @@ _THINKING_ACTIVE = False
 # Configuration constants for display and preview limits
 class Config:
     # Diff preview limits
-    DIFF_PREVIEW_LINES = 10
-    CONTENT_PREVIEW_CHARS = 500
+    DIFF_PREVIEW_LINES = int(os.getenv("DIFF_PREVIEW_LINES", "10"))
+    CONTENT_PREVIEW_CHARS = int(os.getenv("CONTENT_PREVIEW_CHARS", "500"))
     
     # Branch name limits
-    BRANCH_NAME_MAX_LENGTH = 40
+    BRANCH_NAME_MAX_LENGTH = int(os.getenv("BRANCH_NAME_MAX_LENGTH", "40"))
     
     # File reading limits
-    LARGE_FILE_LINE_THRESHOLD = 500
-    LARGE_FILE_PREVIEW_LINES = 100
+    LARGE_FILE_LINE_THRESHOLD = int(os.getenv("LARGE_FILE_LINE_THRESHOLD", "500"))
+    LARGE_FILE_PREVIEW_LINES = int(os.getenv("LARGE_FILE_PREVIEW_LINES", "100"))
     
     # File summary limits
-    SUMMARY_PREVIEW_START_LINES = 10
-    SUMMARY_PREVIEW_END_LINES = 5
-    SUMMARY_TOTAL_LINES_THRESHOLD = 15
+    SUMMARY_PREVIEW_START_LINES = int(os.getenv("SUMMARY_PREVIEW_START_LINES", "10"))
+    SUMMARY_PREVIEW_END_LINES = int(os.getenv("SUMMARY_PREVIEW_END_LINES", "5"))
+    SUMMARY_TOTAL_LINES_THRESHOLD = int(os.getenv("SUMMARY_TOTAL_LINES_THRESHOLD", "15"))
     
     # Search and analysis limits
-    QUICK_SCAN_LINES = 200
-    MAX_RELEVANT_FILES_DISPLAY = 15
-    MAX_ITEMS_DISPLAY = 10
-    MAX_GROUP_VARS_DISPLAY = 5
+    QUICK_SCAN_LINES = int(os.getenv("QUICK_SCAN_LINES", "200"))
+    MAX_RELEVANT_FILES_DISPLAY = int(os.getenv("MAX_RELEVANT_FILES_DISPLAY", "15"))
+    MAX_ITEMS_DISPLAY = int(os.getenv("MAX_ITEMS_DISPLAY", "10"))
+    MAX_GROUP_VARS_DISPLAY = int(os.getenv("MAX_GROUP_VARS_DISPLAY", "5"))
     
     # Verification limits
-    VERIFICATION_PREVIEW_LINES = 30
+    VERIFICATION_PREVIEW_LINES = int(os.getenv("VERIFICATION_PREVIEW_LINES", "30"))
     
     # Tool output limits
-    TOOL_OUTPUT_PREVIEW_CHARS = 100
-    MAX_PLAN_STEPS = 10
+    TOOL_OUTPUT_PREVIEW_CHARS = int(os.getenv("TOOL_OUTPUT_PREVIEW_CHARS", "100"))
+    MAX_PLAN_STEPS = int(os.getenv("MAX_PLAN_STEPS", "10"))
     
     # Display separator widths
-    SEPARATOR_WIDTH_STANDARD = 80
-    SEPARATOR_WIDTH_DIFF = 70
+    SEPARATOR_WIDTH_STANDARD = int(os.getenv("SEPARATOR_WIDTH_STANDARD", "80"))
+    SEPARATOR_WIDTH_DIFF = int(os.getenv("SEPARATOR_WIDTH_DIFF", "70"))
 
 # # Clone or update repository
 # def setup_repo():
@@ -189,26 +190,26 @@ def detect_modification_type(description: str) -> str:
     """Detect the type of modification based on description keywords."""
     description_lower = description.lower()
     
-    # Keywords for each type
-    feature_keywords = ['add', 'implement', 'create', 'new', 'support', 'introduce']
-    bugfix_keywords = ['fix', 'bug', 'issue', 'error', 'crash', 'problem', 'resolve']
-    chore_keywords = ['update', 'upgrade', 'refactor', 'clean', 'maintenance', 'reorganize']
-    hotfix_keywords = ['urgent', 'critical', 'security', 'hotfix', 'emergency']
-    docs_keywords = ['document', 'readme', 'docs', 'comment', 'documentation']
-    test_keywords = ['test', 'testing', 'spec', 'coverage']
+    # Keywords for each type - configurable via environment variables
+    feature_keywords = os.getenv('FEATURE_KEYWORDS', 'add,implement,create,new,support,introduce').split(',')
+    bugfix_keywords = os.getenv('BUGFIX_KEYWORDS', 'fix,bug,issue,error,crash,problem,resolve').split(',')
+    chore_keywords = os.getenv('CHORE_KEYWORDS', 'update,upgrade,refactor,clean,maintenance,reorganize').split(',')
+    hotfix_keywords = os.getenv('HOTFIX_KEYWORDS', 'urgent,critical,security,hotfix,emergency').split(',')
+    docs_keywords = os.getenv('DOCS_KEYWORDS', 'document,readme,docs,comment,documentation').split(',')
+    test_keywords = os.getenv('TEST_KEYWORDS', 'test,testing,spec,coverage').split(',')
     
     # Check for each type
-    if any(keyword in description_lower for keyword in hotfix_keywords):
+    if any(keyword.strip() in description_lower for keyword in hotfix_keywords):
         return 'hotfix'
-    elif any(keyword in description_lower for keyword in bugfix_keywords):
+    elif any(keyword.strip() in description_lower for keyword in bugfix_keywords):
         return 'bugfix'
-    elif any(keyword in description_lower for keyword in docs_keywords):
+    elif any(keyword.strip() in description_lower for keyword in docs_keywords):
         return 'docs'
-    elif any(keyword in description_lower for keyword in test_keywords):
+    elif any(keyword.strip() in description_lower for keyword in test_keywords):
         return 'test'
-    elif any(keyword in description_lower for keyword in chore_keywords):
+    elif any(keyword.strip() in description_lower for keyword in chore_keywords):
         return 'chore'
-    elif any(keyword in description_lower for keyword in feature_keywords):
+    elif any(keyword.strip() in description_lower for keyword in feature_keywords):
         return 'feature'
     else:
         return 'feature'  # Default to feature
@@ -230,6 +231,42 @@ def generate_branch_name(change_type: str, description: str) -> str:
     # Create branch name
     branch_name = f"{change_type}/{clean_desc}"
     return branch_name
+
+def should_ignore_directory(directory_path: Path, dir_name: str) -> bool:
+    """
+    Check if a directory should be ignored based on file count.
+    
+    Args:
+        directory_path: Path object to the directory to check
+        dir_name: Name of the directory (e.g., 'inventories' or 'host_vars')
+    
+    Returns:
+        True if the directory should be ignored, False otherwise
+    """
+    if not directory_path.exists() or not directory_path.is_dir():
+        return False
+    
+    try:
+        # Count only files (not directories)
+        file_count = sum(1 for item in directory_path.iterdir() if item.is_file())
+        
+        # Determine the limit based on directory type
+        if dir_name == 'inventories':
+            max_files = MAX_FILES_IN_INVENTORIES
+        elif dir_name == 'host_vars':
+            max_files = MAX_FILES_IN_HOST_VARS
+        else:
+            # Use the more restrictive limit as default
+            max_files = min(MAX_FILES_IN_INVENTORIES, MAX_FILES_IN_HOST_VARS)
+        
+        should_ignore = file_count > max_files
+        if should_ignore:
+            print_thinking(f"Ignoring {dir_name} directory: contains {file_count} files (max allowed: {max_files})")
+        
+        return should_ignore
+    except Exception as e:
+        print_thinking(f"Error checking {dir_name} directory: {e}")
+        return False
 
 def ask_branch_creation(modification_description: str) -> tuple:
     """Ask user if they want to create a new branch for modifications.
@@ -790,34 +827,45 @@ def analyze_ansible_structure() -> str:
                 discovered_roles.append(role_rel_path)
                 
                 # Check for standard role structure
-                for component in ["tasks", "handlers", "templates", "files", "vars", "defaults", "meta"]:
-                    component_path = role_dir / component
+                role_comp_list = os.getenv('ROLE_COMPONENTS', 'tasks,handlers,defaults,vars,meta,templates,files').split(',')
+                for component in role_comp_list:
+                    component_path = role_dir / component.strip()
                     if component_path.exists():
-                        role_info["components"].append(component)
+                        role_info["components"].append(component.strip())
                 
                 analysis["roles"].append(role_info)
     
-    # Also check for roles in current directory (like RHEL8-CIS which is a role itself)
+    # Also check for roles in current directory (which might be a role itself)
     # Check if current directory has role structure
-    role_components = ["tasks", "handlers", "defaults", "vars", "meta", "templates", "files"]
-    if any((base_path / comp).exists() for comp in role_components):
+    role_components = os.getenv('ROLE_COMPONENTS', 'tasks,handlers,defaults,vars,meta,templates,files').split(',')
+    if any((base_path / comp.strip()).exists() for comp in role_components):
         # This is a role directory
         discovered_roles.append(".")
     
     # Store discovered role paths globally
     _DISCOVERED_ROLE_PATHS = discovered_roles
     
-    # Find inventory files
-    for pattern in ["inventory/*", "hosts", "inventory.ini", "inventory.yml"]:
-        for file_path in base_path.glob(pattern):
-            if file_path.is_file():
-                rel_path = file_path.relative_to(REPO_LOCAL_PATH)
-                analysis["inventory_files"].append(str(rel_path))
+    # Find inventory files (check if inventories directory should be ignored)
+    inventories_path = base_path / "inventories"
+    if inventories_path.exists() and should_ignore_directory(inventories_path, "inventories"):
+        print_thinking("Skipping inventories directory due to file count limit")
+    else:
+        inventory_patterns = os.getenv('INVENTORY_PATTERNS', 'inventory/*,inventories/*,hosts,inventory.ini,inventory.yml').split(',')
+        for pattern in inventory_patterns:
+            for file_path in base_path.glob(pattern.strip()):
+                if file_path.is_file():
+                    rel_path = file_path.relative_to(REPO_LOCAL_PATH)
+                    analysis["inventory_files"].append(str(rel_path))
     
-    # Find group_vars and host_vars
-    for var_type in ["group_vars", "host_vars"]:
+    # Find group_vars and host_vars (check if they should be ignored)
+    var_types = os.getenv('VAR_TYPES', 'group_vars,host_vars').split(',')
+    for var_type in var_types:
+        var_type = var_type.strip()
         var_path = base_path / var_type
         if var_path.exists():
+            if should_ignore_directory(var_path, var_type):
+                print_thinking(f"Skipping {var_type} directory due to file count limit")
+                continue
             for var_file in var_path.rglob("*.yml"):
                 rel_path = var_file.relative_to(REPO_LOCAL_PATH)
                 analysis[var_type].append(str(rel_path))
