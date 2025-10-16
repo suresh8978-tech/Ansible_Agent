@@ -1960,8 +1960,8 @@ Then you MUST call:
   read_file('/Users/user/folder_name/repo_name/vars/main.yml')
 NOT:
   read_file('vars/main.yml')  [WRONG - truncated absolute path]
-  read_file('roles/rhel8-cis/vars/main.yml')  [WRONG - hallucinated path]
-  read_file('/Users/user/RHEL8-CIS/vars/main.yml')  [WRONG - removed part of path]
+  read_file('roles/repo_name/vars/main.yml')  [WRONG - hallucinated path]
+  read_file('/Users/user/repo_name/vars/main.yml')  [WRONG - removed part of path]
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 STOP! READ THIS BEFORE EVERY read_file() CALL:
@@ -1972,7 +1972,7 @@ When you see intelligent_search results showing:
 
 You MUST use that EXACT path:
   ✓ CORRECT: read_file('/Users/user/folder_name_1/folder_name_2/repo_name/vars/main.yml')
-  ✗ WRONG:   read_file('roles/rhel8-cis/vars/main.yml')
+  ✗ WRONG:   read_file('roles/repo_name/vars/main.yml')
   ✗ WRONG:   read_file('vars/main.yml')
 
 NEVER construct paths like 'roles/something/vars/file.yml'
@@ -2141,7 +2141,7 @@ RULE #2: TWO-STEP WORKFLOW (both tools required)
    b) execute_modification_plan (shows diff, requests approval, executes)
 
 RULE #3: ALWAYS USE ABSOLUTE PATHS FROM SEARCH RESULTS
-   - intelligent_search shows: >>> /Users/.../RHEL8-CIS/vars/main.yml <<<
+   - intelligent_search shows: >>> /Users/.../repo_name/vars/main.yml <<<
    - Extract that EXACT path and use it with read_file() and create_modification_plan()
    - NEVER construct paths like 'roles/something/vars/main.yml'
    - NEVER use relative paths like 'vars/main.yml'
