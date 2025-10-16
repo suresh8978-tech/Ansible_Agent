@@ -557,7 +557,19 @@ def grep_search(pattern: str, file_pattern: str = "*", case_sensitive: bool = Fa
         
         return "\n".join(results) + f"\n\nFound {len(_LAST_SEARCH_PATHS)} unique files. Call read_all_found_files() to read all of them."
     else:
-        return f"No matches found for pattern '{pattern}'."
+        output_no_match = []
+        output_no_match.append("=" * Config.SEPARATOR_WIDTH_STANDARD)
+        output_no_match.append(f"NO MATCHES FOUND for pattern: '{pattern}' in {file_pattern}")
+        output_no_match.append("=" * Config.SEPARATOR_WIDTH_STANDARD)
+        output_no_match.append("")
+        output_no_match.append("CRITICAL: This pattern does not exist in the repository.")
+        output_no_match.append("")
+        output_no_match.append("NEXT STEP: Immediately call intelligent_search() with the same term.")
+        output_no_match.append(f"  intelligent_search('{pattern.replace('.*', '').strip()}', '{file_pattern}')")
+        output_no_match.append("")
+        output_no_match.append("intelligent_search will try common naming variations automatically.")
+        output_no_match.append("=" * Config.SEPARATOR_WIDTH_STANDARD)
+        return "\n".join(output_no_match)
 
 @tool
 def intelligent_search(search_term: str, file_pattern: str = "*.yml", max_results_per_pattern: int = 10) -> str:
@@ -667,7 +679,28 @@ def intelligent_search(search_term: str, file_pattern: str = "*.yml", max_result
     
     # Format output
     if not results_by_variation:
-        return f"No matches found for '{search_term}' or any of its variations.\n\nTried variations:\n" + "\n".join(f"  - {name}: {pattern}" for name, pattern in variations)
+        output_not_found = []
+        output_not_found.append("=" * Config.SEPARATOR_WIDTH_STANDARD)
+        output_not_found.append("!" * Config.SEPARATOR_WIDTH_STANDARD)
+        output_not_found.append(f"NO MATCHES FOUND FOR: '{search_term}'")
+        output_not_found.append("!" * Config.SEPARATOR_WIDTH_STANDARD)
+        output_not_found.append("=" * Config.SEPARATOR_WIDTH_STANDARD)
+        output_not_found.append("")
+        output_not_found.append(f"The term '{search_term}' does not exist in any {file_pattern} files in this repository.")
+        output_not_found.append("This means:")
+        output_not_found.append(f"  1. No file contains the variable/setting '{search_term}'")
+        output_not_found.append("  2. You CANNOT suggest modifying a file for this term")
+        output_not_found.append("  3. The file/variable does NOT exist - tell the user this")
+        output_not_found.append("")
+        output_not_found.append("Tried these variations:")
+        for name, pattern in variations:
+            output_not_found.append(f"  - {name}: {pattern}")
+        output_not_found.append("")
+        output_not_found.append("=" * Config.SEPARATOR_WIDTH_STANDARD)
+        output_not_found.append("CRITICAL: Do NOT hallucinate file paths in your answer!")
+        output_not_found.append("Tell the user: 'This variable/file does not exist in the repository.'")
+        output_not_found.append("=" * Config.SEPARATOR_WIDTH_STANDARD)
+        return "\n".join(output_not_found)
     
     output = [f"INTELLIGENT SEARCH RESULTS for '{search_term}'"]
     output.append(f"Found {total_matches} total matches across {len(results_by_variation)} pattern variations.\n")
@@ -2025,6 +2058,33 @@ Ansible Tools:
 - verify_modification: MANDATORY tool to verify changes after execution (enables retry loop)
 - analyze_role_structure: Analyze role (CRITICAL: MUST call analyze_ansible_structure first to discover role paths)
 
+CRITICAL FINAL ANSWER RULES (PREVENTS HALLUCINATION):
+
+Rule 1: FINAL ANSWER MUST ONLY USE DISCOVERED FILES
+  - When providing the final answer to the user, ONLY mention files that were actually found by search tools
+  - NEVER suggest modifying files like 'roles/xyz/vars/main.yml' unless you have SEEN this file in search results
+  - If you haven't found a specific file, DO NOT suggest it exists
+
+Rule 2: FINAL ANSWER PATH FORMAT
+  - In your final answer, you MAY use relative paths for clarity (e.g., "modify roles/hpe/vars/main.yml")
+  - BUT you must FIRST verify this file exists by seeing it in search results
+  - If the file doesn't exist in search results, state: "The file does not exist. You need to create it first."
+
+Rule 3: VALIDATE BEFORE SUGGESTING
+  - Before suggesting to modify a file in your final answer, check your search results
+  - If grep_search or intelligent_search didn't find the file → it doesn't exist
+  - Don't assume standard Ansible structure (like vars/main.yml) exists unless you've seen it
+
+Rule 4: BE EXPLICIT ABOUT MISSING FILES
+  - If user asks to modify something and the expected file doesn't exist, say so clearly
+  - Example: "The role 'hpe' exists but doesn't have a vars/main.yml file. You'll need to create this file first."
+  - Never pretend a file exists when it wasn't found in searches
+
+Rule 5: USE ACTUAL DISCOVERED PATHS IN TOOL CALLS
+  - Even though final answer can use relative paths for readability
+  - ALL tool calls (read_file, create_modification_plan) MUST use absolute paths from search
+  - Never mix these up
+
 CRITICAL SEARCH STRATEGY (MANDATORY):
 When searching for variables/config names, follow this EXACT sequence:
 
@@ -2193,6 +2253,35 @@ Git workflow:
 - Git fetch and sync happen automatically at the start of each query
 - Users can create feature/bugfix/chore/hotfix branches for modifications
 - Branch creation is optional - users can work on current branch if preferred
+
+FINAL ANSWER VALIDATION (CRITICAL - PREVENTS HALLUCINATION):
+
+Before providing your final answer to the user:
+
+1. CHECK YOUR SEARCH RESULTS
+   - Review what files were actually found by grep_search or intelligent_search
+   - Only mention files that were ACTUALLY discovered
+   - If you didn't find a file, don't claim it exists
+
+2. VERIFY FILE EXISTENCE
+   - If suggesting to modify "roles/xyz/vars/main.yml", verify you saw this exact file in search results
+   - If the file wasn't found → tell the user "This file doesn't exist. You need to create it first."
+   - Never assume standard Ansible files exist without verification
+
+3. USE DISCOVERED PATHS ONLY
+   - In your final answer, only reference files that appeared in your search/read operations
+   - If you searched for a file and got "No matches found" → that file does NOT exist
+   - Don't hallucinate paths based on Ansible conventions
+
+4. BE HONEST ABOUT MISSING FILES
+   - If the expected file is missing, explicitly state this
+   - Example: "The hpe role exists but does not have a vars/main.yml file yet. You'll need to create this file first at [absolute_path]/roles/hpe/vars/main.yml"
+   - Provide the absolute path where the file SHOULD be created
+
+5. FINAL ANSWER FORMAT FOR MODIFICATIONS
+   - If file exists: "To modify X, edit the file at [path] by adding [change]"
+   - If file doesn't exist: "The file [path] does not exist. You need to create it first with the following content: [content]"
+   - Always base this on actual search results, not assumptions
 
 When you have enough information, provide your answer."""
 
@@ -2677,9 +2766,23 @@ Steps Executed:
 {discovered_paths_info}
 {discovered_roles_info}
 
+CRITICAL FINAL ANSWER VALIDATION CHECKLIST:
+
+Before providing your answer, verify:
+1. ✓ Did you search for the file/variable mentioned?
+2. ✓ Was the file ACTUALLY found in search results?
+3. ✓ If NOT found → Tell user the file doesn't exist (don't suggest modifying it)
+4. ✓ If found → Use the EXACT path from discovered paths list above
+5. ✓ Never mention paths like 'roles/xyz/vars/main.yml' unless you SAW this file in search results
+
+ANSWER FORMAT:
+- If file exists: "To modify X, edit [exact_path_from_discovered_list] by [change]"
+- If file NOT found: "The file [path] does not exist in this repository. You need to create it first."
+- Always check discovered paths list before mentioning any file
+
 Provide a clear, brief answer focusing only on what the user asked.
 
-If mentioning file paths or role paths, use ONLY the discovered paths/roles listed above - DO NOT hallucinate paths.""")
+REMEMBER: Use ONLY discovered paths/roles listed above - DO NOT hallucinate or assume paths exist.""")
         
         response = llm.invoke([final_prompt])
         
