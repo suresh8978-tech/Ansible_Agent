@@ -10,8 +10,8 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-# from pyvegas.langx.llm import VegasChatLLM
-from langchain_google_genai import ChatGoogleGenerativeAI
+from pyvegas.langx.llm import VegasChatLLM
+# from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Load environment variables
 load_dotenv()
@@ -26,6 +26,9 @@ REPO_LOCAL_PATH = os.getenv("REPO_LOCAL_PATH", "./RHEL8-CIS")
 MAX_FILES_IN_INVENTORIES = int(os.getenv("MAX_FILES_IN_INVENTORIES", "15"))
 MAX_FILES_IN_HOST_VARS = int(os.getenv("MAX_FILES_IN_HOST_VARS", "15"))
 
+# Configuration for excluded directories when listing files
+EXCLUDED_DIRECTORIES = os.getenv("EXCLUDED_DIRECTORIES", "inventory,.git,__pycache__,venv,node_modules,.pytest_cache,.tox,dist,build,*.egg-info").split(',')
+
 # Global storage for modification plans
 PENDING_MODIFICATION_PLAN = None
 
@@ -39,6 +42,10 @@ _DISCOVERED_ROLE_PATHS = []
 # The thinking tag system wraps all intermediate processing and reasoning in <thinking> tags
 # Only the final answer is displayed outside the thinking tags
 _THINKING_ACTIVE = False
+
+# Global storage for repository file list and ansible structure
+_REPO_FILE_LIST = None
+_ANSIBLE_STRUCTURE = None
 
 # Configuration constants for display and preview limits
 class Config:
@@ -267,6 +274,119 @@ def should_ignore_directory(directory_path: Path, dir_name: str) -> bool:
     except Exception as e:
         print_thinking(f"Error checking {dir_name} directory: {e}")
         return False
+
+def build_repository_file_list() -> str:
+    """
+    Build a comprehensive list of all files in the repository.
+    Excludes directories specified in EXCLUDED_DIRECTORIES configuration.
+    
+    Returns:
+        Formatted string containing all file paths in the repository
+    """
+    global _REPO_FILE_LIST
+    
+    if _REPO_FILE_LIST is not None:
+        return _REPO_FILE_LIST
+    
+    repo_path = Path(REPO_LOCAL_PATH)
+    if not repo_path.exists():
+        return "Repository path does not exist"
+    
+    file_list = []
+    excluded_dirs = [d.strip() for d in EXCLUDED_DIRECTORIES]
+    
+    for root, dirs, files in os.walk(repo_path):
+        root_path = Path(root)
+        rel_root = root_path.relative_to(repo_path) if root_path != repo_path else Path(".")
+        
+        # Filter out excluded directories
+        dirs[:] = [d for d in dirs if d not in excluded_dirs and not d.startswith('.')]
+        
+        for file in files:
+            if file.startswith('.'):
+                continue
+            file_path = root_path / file
+            rel_path = file_path.relative_to(repo_path)
+            file_list.append(str(rel_path))
+    
+    file_list.sort()
+    _REPO_FILE_LIST = "\n".join(file_list)
+    return _REPO_FILE_LIST
+
+def get_ansible_structure_context() -> str:
+    """
+    Get the Ansible structure context using ansible-content-capture or ansible_extractor.
+    Returns a formatted string describing the structure of the Ansible codebase.
+    
+    Returns:
+        Formatted string containing ansible structure information
+    """
+    global _ANSIBLE_STRUCTURE
+    
+    if _ANSIBLE_STRUCTURE is not None:
+        return _ANSIBLE_STRUCTURE
+    
+    try:
+        # Import the ansible extractor
+        from ansible_extractor import AnsibleExtractor
+        
+        repo_path = Path(REPO_LOCAL_PATH)
+        if not repo_path.exists():
+            return "Repository path does not exist"
+        
+        extractor = AnsibleExtractor(str(repo_path))
+        
+        structure_info = []
+        structure_info.append("=== Ansible Repository Structure ===\n")
+        
+        # Get file-level information
+        for file_path in extractor._walk_repository():
+            rel_path = file_path.relative_to(repo_path)
+            file_type = file_path.suffix
+            
+            # Categorize files
+            if 'playbook' in str(rel_path).lower() or str(rel_path).endswith('site.yml'):
+                category = "PLAYBOOK"
+            elif '/tasks/' in str(rel_path):
+                category = "TASKS"
+            elif '/vars/' in str(rel_path) or '/defaults/' in str(rel_path):
+                category = "VARIABLES"
+            elif '/templates/' in str(rel_path):
+                category = "TEMPLATE"
+            elif '/handlers/' in str(rel_path):
+                category = "HANDLERS"
+            elif '/meta/' in str(rel_path):
+                category = "METADATA"
+            elif file_type in ['.yml', '.yaml']:
+                category = "YAML"
+            else:
+                category = "OTHER"
+            
+            structure_info.append(f"[{category}] {rel_path}")
+        
+        _ANSIBLE_STRUCTURE = "\n".join(structure_info)
+        return _ANSIBLE_STRUCTURE
+        
+    except Exception as e:
+        # Fallback: simple directory structure
+        structure_info = ["=== Ansible Repository Structure (Simple) ===\n"]
+        repo_path = Path(REPO_LOCAL_PATH)
+        
+        for root, dirs, files in os.walk(repo_path):
+            root_path = Path(root)
+            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRECTORIES and not d.startswith('.')]
+            
+            level = len(root_path.relative_to(repo_path).parts)
+            indent = "  " * level
+            
+            for file in sorted(files):
+                if not file.startswith('.'):
+                    file_path = root_path / file
+                    rel_path = file_path.relative_to(repo_path)
+                    structure_info.append(f"{indent}{rel_path}")
+        
+        _ANSIBLE_STRUCTURE = "\n".join(structure_info)
+        return _ANSIBLE_STRUCTURE
 
 def ask_branch_creation(modification_description: str) -> tuple:
     """Ask user if they want to create a new branch for modifications.
@@ -1913,7 +2033,16 @@ REQUIRED ACTION:
         return f"Error analyzing role: {str(e)}"
 
 # Chain of Thought prompt for planning
-COT_PLANNING_PROMPT = """You are an expert Ansible coding assistant. Before taking any action, think through the problem step by step.
+COT_PLANNING_PROMPT_BASE = """You are an expert Ansible coding assistant. Before taking any action, think through the problem step by step.
+
+CRITICAL: Repository File Context
+You have access to a complete list of files in the repository. When planning your approach:
+- ONLY plan to work with files that exist in the repository file list
+- DO NOT assume files exist - check the repository file list first
+- If a file is not in the list, it does not exist and needs to be created first
+- Use exact file paths from the repository context
+
+{repository_context}
 
 For the user's query, create a detailed plan following this Chain of Thought approach:
 
@@ -1921,6 +2050,7 @@ STEP 1 - UNDERSTAND THE QUERY:
 - What is the user asking for?
 - What information do I need to answer this?
 - Is this a question, modification request, or analysis task?
+- Check the repository file list above to see what files are available
 
 STEP 2 - PLAN THE APPROACH:
 - Which tools should I use and in what order?
@@ -2187,14 +2317,64 @@ NOTE: Git fetch and sync happen automatically at the start of each query.
 
 Think step by step and create a clear plan before using tools."""
 
+def get_planning_prompt() -> str:
+    """Generate planning prompt with repository context."""
+    repo_files = build_repository_file_list()
+    file_count = len(repo_files.split('\n')) if repo_files else 0
+    
+    # For planning, we include a condensed file list (not the full content)
+    # This gives context without overwhelming the planning stage
+    file_lines = repo_files.split('\n')
+    if len(file_lines) > 100:
+        # Show first 50 and last 50 files with indicator in between
+        condensed_files = '\n'.join(file_lines[:50]) + f'\n... ({len(file_lines) - 100} more files) ...\n' + '\n'.join(file_lines[-50:])
+    else:
+        condensed_files = repo_files
+    
+    repository_context = f"""
+=== REPOSITORY FILES (Total: {file_count} files) ===
+Available files in the repository (use these paths when planning):
+
+{condensed_files}
+
+=== END REPOSITORY FILES ===
+"""
+    
+    return COT_PLANNING_PROMPT_BASE.format(repository_context=repository_context)
+
 # System prompt for tool execution
-SYSTEM_PROMPT = """You are executing a plan to help with Ansible code.
+SYSTEM_PROMPT_BASE = """You are executing a plan to help with Ansible code.
 
 Execute the planned steps efficiently:
 - Use tools as planned
 - Minimize file reads
 - Focus on relevant information
 - Provide clear, concise responses
+
+CRITICAL: Repository Context
+You have access to a complete list of files in the repository. When answering questions or making modifications:
+- ONLY reference files that exist in the repository file list below
+- DO NOT hallucinate file paths or assume files exist
+- If a file is not in the list, explicitly state that it does not exist
+- Use the exact file paths from the repository context
+
+{repository_context}"""
+
+def get_system_prompt() -> str:
+    """Generate system prompt with repository context."""
+    repo_files = build_repository_file_list()
+    file_count = len(repo_files.split('\n')) if repo_files else 0
+    
+    repository_context = f"""
+=== REPOSITORY FILES (Total: {file_count} files) ===
+These are ALL the files that exist in the repository. Only reference files from this list:
+
+{repo_files}
+
+=== END REPOSITORY FILES ===
+"""
+    
+    return SYSTEM_PROMPT_BASE.format(repository_context=repository_context) + """
 
 CRITICAL WORKFLOW AFTER intelligent_search (MANDATORY):
 
@@ -2327,17 +2507,17 @@ TOOLS = [
 def create_ansible_agent():
     """Create and return the Ansible Chain of Thought agent."""
     # Use lower temperature for more focused, context-based responses
-    # llm = VegasChatLLM(
-    #     prompt_id = "ANSIBLE_AGENT_PROMPT"
-    # )
+    llm = VegasChatLLM(
+        prompt_id = "ANSIBLE_AGENT_PROMPT"
+    )
 
     # Configure LLM with Google Gemini
-    llm = ChatGoogleGenerativeAI(
-        model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
-        temperature=0.2,
-        convert_system_message_to_human=True
-    )
+    # llm = ChatGoogleGenerativeAI(
+    #     model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+    #     google_api_key=os.getenv("GOOGLE_API_KEY"),
+    #     temperature=0.2,
+    #     convert_system_message_to_human=True
+    # )
     
     # Bind tools to LLM
     llm_with_tools = llm.bind_tools(TOOLS)
@@ -2405,10 +2585,15 @@ def create_ansible_agent():
         
         print_thinking("Analyzing user request...", "THINKING")
         print_thinking(f"User Query: {user_query}", "THINKING")
+        print_thinking("Loading repository context...", "PLANNING")
+        
+        # Get planning prompt with repository context
+        planning_prompt = get_planning_prompt()
+        
         print_thinking("Creating detailed execution plan...", "PLANNING")
         
         # Enhanced planning prompt that asks for numbered steps
-        planning_message = HumanMessage(content=f"""{COT_PLANNING_PROMPT}
+        planning_message = HumanMessage(content=f"""{planning_prompt}
 
 User Query: {user_query}
 
@@ -2845,6 +3030,15 @@ def main():
     #     setup_repo()
     # else:
     #     print("Warning: GIT_REPO_URL not set. Make sure ansible_repo directory exists.")
+    
+    # Initialize repository context
+    print("Initializing repository context...")
+    repo_files = build_repository_file_list()
+    if repo_files and repo_files != "Repository path does not exist":
+        file_count = len(repo_files.split('\n'))
+        print(f"Repository context loaded: {file_count} files indexed")
+    else:
+        print("Warning: Could not load repository context")
     
     # Create agent
     agent = create_ansible_agent()
